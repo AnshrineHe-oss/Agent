@@ -6,6 +6,7 @@
 import type { TriageInput, TriageResult } from './triage-engine';
 import { analyzeTriage } from './triage-engine';
 import { BODY_PARTS } from './medical-data';
+import type { UserProfile } from './profile';
 
 const COZE_API_BASE = process.env.COZE_API_BASE_URL || 'https://api.coze.cn';
 const BOT_ID = process.env.COZE_TRIAGE_BOT_ID;
@@ -15,9 +16,9 @@ export function isCozeBotConfigured(): boolean {
   return Boolean(BOT_ID && API_TOKEN);
 }
 
-export async function runTriage(input: TriageInput): Promise<TriageResult> {
+export async function runTriage(input: TriageInput, profile: UserProfile | null = null): Promise<TriageResult> {
   // 优先用本地规则引擎快速返回（确保可用性与合规）
-  const localResult = analyzeTriage(input, BODY_PARTS);
+  const localResult = analyzeTriage(input, BODY_PARTS, profile);
 
   // 若配置了 Coze Bot，尝试调用 Coze 做增强（用本地结果兜底）
   if (!isCozeBotConfigured()) {
@@ -25,7 +26,7 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   }
 
   try {
-    const botResult = await callCozeBot(input, localResult);
+    const botResult = await callCozeBot(input, profile, localResult);
     return botResult;
   } catch (err) {
     console.error('[triage] Coze 调用失败，降级为本地结果', err);
@@ -33,7 +34,7 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   }
 }
 
-async function callCozeBot(input: TriageInput, fallback: TriageResult): Promise<TriageResult> {
+async function callCozeBot(input: TriageInput, profile: UserProfile | null, fallback: TriageResult): Promise<TriageResult> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${API_TOKEN}`,
     'Content-Type': 'application/json',
@@ -54,6 +55,12 @@ async function callCozeBot(input: TriageInput, fallback: TriageResult): Promise<
     `诱因：${input.trigger}`,
     `人群：${input.population}`,
     `既往：${input.medicalHistory ?? '无'}`,
+    profile ? `健康档案：${[
+      profile.chronicDiseases.length > 0 ? `慢性病：${profile.chronicDiseases.join('、')}` : '',
+      profile.allergies.length > 0 ? `过敏：${profile.allergies.join('、')}` : '',
+      profile.isPregnant ? '孕期' : '',
+      profile.isLactating ? '哺乳期' : '',
+    ].filter(Boolean).join('；') || '无'}` : '',
     '请根据已发布的居家方案规则，给出标准化研判与方案。',
   ].join('\n');
 

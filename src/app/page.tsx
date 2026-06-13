@@ -1,14 +1,16 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Stepper } from '@/components/consult/stepper';
 import { Step1Part } from '@/components/consult/step1-part';
 import { Step2Symptom } from '@/components/consult/step2-symptom';
 import { Step3Detail, type Step3Data } from '@/components/consult/step3-detail';
 import { ConsultFooter } from '@/components/consult/footer';
 import { ResultView } from '@/components/consult/result';
-import { Stethoscope, ShieldCheck } from 'lucide-react';
+import { ProfileEditor } from '@/components/consult/profile-editor';
+import { Stethoscope, ShieldCheck, UserCircle2, BookOpen } from 'lucide-react';
 import type { TriageResult } from '@/lib/triage-engine';
+import { loadProfile, applyProfileToStep3, type UserProfile } from '@/lib/profile';
 
 const STEPS = [
   { id: 1, title: '选部位', subtitle: '身体哪里不舒服' },
@@ -41,6 +43,32 @@ export default function Home() {
   const [skipMessage, setSkipMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // 档案相关
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+
+  // 初始化时从 localStorage 读取档案
+  useEffect(() => {
+    const p = loadProfile();
+    setProfile(p);
+    setProfileLoaded(true);
+  }, []);
+
+  // 当首次进入步骤 3 时，自动应用档案
+  useEffect(() => {
+    if (step === 3 && profile && !step3.population) {
+      const preset = applyProfileToStep3(profile);
+      setStep3((prev) => ({
+        ...prev,
+        ...preset,
+        // 如果是首次进入且没有已填项，预填 profile
+        population: prev.population || preset.population || '',
+        medicalHistory: prev.medicalHistory || preset.medicalHistory || '',
+      }));
+    }
+  }, [step, profile, step3.population]);
+
   // ─── 验证每一步是否可前进 ───
   const canGoNext = useCallback((): { ok: boolean; reason?: string } => {
     if (step === 1) {
@@ -71,7 +99,6 @@ export default function Home() {
 
     if (step < 3) {
       setStep((s) => s + 1);
-      // 滚动到顶部
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
@@ -92,6 +119,7 @@ export default function Home() {
           population: step3.population,
           medicalHistory: step3.medicalHistory,
           accompany: step3.accompany,
+          profile, // 一并提交档案
         }),
       });
       const json = (await res.json()) as {
@@ -111,7 +139,7 @@ export default function Home() {
       setError(e instanceof Error ? e.message : '提交失败，请稍后重试');
       setPhase('form');
     }
-  }, [canGoNext, step, partId, symptomIds, step3]);
+  }, [canGoNext, step, partId, symptomIds, step3, profile]);
 
   const handlePrev = useCallback(() => {
     if (step > 1) {
@@ -137,27 +165,59 @@ export default function Home() {
     );
   }, []);
 
+  // 档案是否"实际填写过"
+  const profileConfigured =
+    profileLoaded &&
+    profile !== null &&
+    (profile.chronicDiseases.length > 0 ||
+      profile.allergies.length > 0 ||
+      profile.currentMedications.trim() !== '' ||
+      profile.isPregnant ||
+      profile.isLactating ||
+      profile.hasChildUnder12 ||
+      profile.hasElder ||
+      profile.age.trim() !== '');
+
   return (
     <div className="min-h-screen bg-[#F7FAFC]">
       {/* 顶部 Banner */}
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto max-w-3xl px-4 sm:px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#3B82C4] to-[#5C9BD4] text-white shadow-sm">
+        <div className="mx-auto max-w-3xl px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#3B82C4] to-[#5C9BD4] text-white shadow-sm">
               <Stethoscope className="h-5 w-5" />
             </div>
-            <div>
-              <h1 className="text-base font-semibold text-[#1F2937]">
+            <div className="min-w-0">
+              <h1 className="text-base font-semibold text-[#1F2937] truncate">
                 居家轻症引导问诊
               </h1>
-              <p className="text-[11px] text-slate-500">
-                三步梳理病情 · 给出居家护理参考
+              <p className="text-[11px] text-slate-500 truncate">
+                三步梳理病情 · 个性化居家方案
               </p>
             </div>
           </div>
-          <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-500">
-            <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
-            <span>合规引导 · 不开处方</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setEditorOpen(true)}
+              className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-xl border text-sm transition ${
+                profileConfigured
+                  ? 'border-[#3B82C4] bg-[#E6F0F8] text-[#3B82C4]'
+                  : 'border-slate-200 text-slate-600 hover:border-[#3B82C4]'
+              }`}
+            >
+              <UserCircle2 className="h-4 w-4" />
+              <span className="hidden sm:inline">我的档案</span>
+              {profileConfigured && (
+                <span className="text-[10px] font-semibold bg-[#3B82C4] text-white px-1.5 py-0.5 rounded-full">
+                  已建
+                </span>
+              )}
+            </button>
+            <div className="hidden lg:flex items-center gap-1.5 text-xs text-slate-500">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
+              <span>合规引导</span>
+            </div>
           </div>
         </div>
       </header>
@@ -170,6 +230,23 @@ export default function Home() {
               <Stepper current={step} steps={STEPS} />
             </div>
 
+            {/* 档案使用状态条（步骤3 顶部可见） */}
+            {step === 3 && profileConfigured && (
+              <div className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-[#3B82C4]/30 bg-[#E6F0F8] px-3.5 py-2.5">
+                <div className="flex items-center gap-2 text-sm text-[#1F2937] min-w-0">
+                  <BookOpen className="h-4 w-4 text-[#3B82C4] shrink-0" />
+                  <span className="truncate">已自动应用您的健康档案，可继续调整</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditorOpen(true)}
+                  className="shrink-0 text-xs text-[#3B82C4] hover:underline"
+                >
+                  修改
+                </button>
+              </div>
+            )}
+
             {/* 当前步骤内容 */}
             <div key={step} className="step-fade-in">
               {step === 1 && (
@@ -177,7 +254,7 @@ export default function Home() {
                   selected={partId}
                   onSelect={(id) => {
                     if (partId !== id) {
-                      setSymptomIds([]); // 切换部位时清空症状
+                      setSymptomIds([]);
                     }
                     setPartId(id);
                   }}
@@ -239,9 +316,17 @@ export default function Home() {
             本服务为居家轻症的引导性参考工具，所有建议均不能替代执业医师的诊断与处方。
             严格不推荐任何处方药、抗生素、激素类药物。
             如出现高危症状（高热、剧痛、呼吸困难、意识改变、持续加重等），请立即前往医院或拨打 120。
+            健康档案仅存储在您的浏览器本地，不会上传到服务器。
           </p>
         </div>
       </footer>
+
+      {/* 档案编辑器（抽屉/弹层） */}
+      <ProfileEditor
+        open={editorOpen}
+        onClose={() => setEditorOpen(false)}
+        onSaved={(p) => setProfile(p)}
+      />
     </div>
   );
 }

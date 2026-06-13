@@ -1,8 +1,11 @@
-// 居家轻症问诊 - 研判规则引擎
+// 居家轻症问诊 - 研判规则引擎（v2：集成档案 + 详细药物 + 症状预测）
 // 规则依据：通用家庭医学常识 + 常见轻症居家处理原则
 // ⚠️ 严格遵守硬性合规红线：仅做引导，不开处方药
 
 import type { BodyPart, SymptomItem } from './medical-data';
+import type { UserProfile } from './profile';
+import { recommendDrugs, type DrugRecommendation } from './drug-database';
+import { predict, type Prediction } from './prediction';
 
 export interface TriageInput {
   partId: string;
@@ -15,22 +18,54 @@ export interface TriageInput {
   accompany?: string[];
 }
 
-export interface PlanSection {
+// ── 板块类型（联合） ──
+export interface TextSection {
+  type: 'text';
   key: string;
   title: string;
   icon: string;
   content: string[];
 }
 
+export interface DrugSection {
+  type: 'drugs';
+  key: string;
+  title: string;
+  icon: string;
+  drugs: DrugRecommendation[];
+  warning?: string[];
+}
+
+export interface PredictionSection {
+  type: 'prediction';
+  key: string;
+  title: string;
+  icon: string;
+  prediction: Prediction;
+}
+
+export interface LifestyleSection {
+  type: 'lifestyle';
+  key: string;
+  title: string;
+  icon: string;
+  dos: string[];
+  avoids: string[];
+  notes: string[];
+}
+
+export type PlanSection = TextSection | DrugSection | PredictionSection | LifestyleSection;
+
 export interface TriageResult {
-  level: 'home' | 'caution' | 'urgent'; // 可居家 / 注意观察 / 立即就医
+  level: 'home' | 'caution' | 'urgent';
   levelLabel: string;
   alertTitle: string;
   alertDesc: string;
   summary: string;
-  riskFactors: string[]; // 命中规则
+  riskFactors: string[];
   sections: PlanSection[];
   specialPopulationTip?: string;
+  profileApplied: boolean; // 是否应用了档案数据
 }
 
 // ──────── 规则判定 ────────
@@ -64,11 +99,15 @@ const HIGH_RISK_PART_POPULATION: Record<string, string[]> = {
   systemic: ['pregnant', 'children', 'elder', 'chronic'],
 };
 
-export function analyzeTriage(input: TriageInput, allParts: BodyPart[]): TriageResult {
+export function analyzeTriage(
+  input: TriageInput,
+  allParts: BodyPart[],
+  profile: UserProfile | null = null,
+): TriageResult {
   const part = allParts.find((p) => p.id === input.partId);
   const riskFactors: string[] = [];
 
-  // 1) 红旗症状（高危关键词）
+  // 1) 红旗症状
   const hitRedFlag = input.symptomIds.find((id) => RED_FLAG_SYMPTOMS.has(id));
   if (hitRedFlag) {
     const s = findSymptom(part, hitRedFlag);
@@ -90,7 +129,7 @@ export function analyzeTriage(input: TriageInput, allParts: BodyPart[]): TriageR
     riskFactors.push(`痛感达到 ${input.painLevel}/10（重度疼痛）`);
   }
 
-  // 5) 特殊人群在高风险部位
+  // 5) 特殊人群高风险部位
   if (input.partId in HIGH_RISK_PART_POPULATION) {
     const sensitive = HIGH_RISK_PART_POPULATION[input.partId];
     if (sensitive.includes(input.population)) {
@@ -98,9 +137,14 @@ export function analyzeTriage(input: TriageInput, allParts: BodyPart[]): TriageR
     }
   }
 
-  // 6) 儿童发热判断
+  // 6) 儿童中等发热
   if (input.population === 'children' && input.symptomIds.includes('fever_mid')) {
     riskFactors.push('儿童中等度发热建议线下就医明确病因');
+  }
+
+  // 7) 过敏
+  for (const a of profile?.allergies ?? []) {
+    // 已在风险因素提示（informational）
   }
 
   // ── 等级判定 ──
@@ -129,7 +173,12 @@ export function analyzeTriage(input: TriageInput, allParts: BodyPart[]): TriageR
   }
 
   // ── 警示文案 ──
-  const levelLabel = level === 'urgent' ? '建议立即线下就医' : level === 'caution' ? '建议居家观察并及时就医' : '可先居家护理观察';
+  const levelLabel =
+    level === 'urgent'
+      ? '建议立即线下就医'
+      : level === 'caution'
+        ? '建议居家观察并及时就医'
+        : '可先居家护理观察';
   const alertTitle =
     level === 'urgent'
       ? '⚠️ 出现高危信号，请尽快前往医院'
@@ -148,22 +197,19 @@ export function analyzeTriage(input: TriageInput, allParts: BodyPart[]): TriageR
     .map((id) => findSymptom(part, id)?.name)
     .filter(Boolean)
     .join('、');
-  const durationLabel = humanDuration(input.durationHours);
   const painLabel =
-    input.painLevel === 0
-      ? '无明显痛感'
-      : `痛感 ${input.painLevel}/10`;
+    input.painLevel === 0 ? '无明显痛感' : `痛感 ${input.painLevel}/10`;
   const summary = [
     `部位：${part?.name ?? '-'}`,
     `症状：${symptomNames || '-'}`,
-    `发病：${durationLabel}`,
+    `发病：${humanDuration(input.durationHours)}`,
     `痛感：${painLabel}`,
     `诱因：${triggerLabel(input.trigger)}`,
     `人群：${popLabel(input.population)}`,
   ].join('；');
 
-  const sections = buildPlanSections(input, part, level);
-  const specialPopulationTip = buildPopulationTip(input.population);
+  const sections = buildPlanSections(input, part, level, profile);
+  const specialPopulationTip = buildPopulationTip(input.population, profile);
 
   return {
     level,
@@ -174,21 +220,23 @@ export function analyzeTriage(input: TriageInput, allParts: BodyPart[]): TriageR
     riskFactors,
     sections,
     specialPopulationTip,
+    profileApplied: profile !== null && (profile.chronicDiseases.length > 0 || profile.allergies.length > 0 || profile.isPregnant || profile.isLactating || profile.hasChildUnder12 || profile.hasElder),
   };
 }
 
 // ──────── 板块生成 ────────
 
-function buildPlanSections(input: TriageInput, part: BodyPart | undefined, level: TriageResult['level']): PlanSection[] {
+function buildPlanSections(
+  input: TriageInput,
+  part: BodyPart | undefined,
+  level: TriageResult['level'],
+  profile: UserProfile | null,
+): PlanSection[] {
   const sections: PlanSection[] = [];
-  const homeAdvice = buildHomeAdvice(input, part);
-  const otc = buildOTCAdvice(input, part);
-  const rest = buildRestAdvice(input, part);
-  const diet = buildDietAdvice(input, part);
-  const observe = buildObserveAdvice(level, input);
-  const escalation = buildEscalationAdvice(level);
 
+  // 1) 病情规整总结
   sections.push({
+    type: 'text',
     key: 'summary',
     title: '病情规整总结',
     icon: '📋',
@@ -199,42 +247,99 @@ function buildPlanSections(input: TriageInput, part: BodyPart | undefined, level
       `痛感程度：${input.painLevel}/10`,
       `诱发因素：${triggerLabel(input.trigger)}`,
       `所属人群：${popLabel(input.population)}`,
+      ...(profile && (profile.chronicDiseases.length > 0 || profile.allergies.length > 0)
+        ? [`已知健康背景：${[...profile.chronicDiseases, ...profile.allergies.map((a) => `过敏：${a}`)].join('、')}`]
+        : []),
     ],
   });
 
+  // 2) 居家护理建议
   sections.push({
+    type: 'text',
     key: 'home',
     title: '居家护理建议',
     icon: '🏠',
-    content: homeAdvice,
+    content: buildHomeAdvice(input, part),
   });
 
-  sections.push({
-    key: 'otc',
-    title: 'OTC 非处方药参考',
-    icon: '💊',
-    content: otc,
-  });
+  // 3) OTC 非处方药参考（结构化卡片）
+  if (level !== 'urgent') {
+    const drugs = recommendDrugs(input.partId, input.symptomIds, {
+      isPregnant: input.population === 'pregnant' || profile?.isPregnant === true,
+      isLactating: profile?.isLactating === true,
+      age: profile?.age || '',
+      chronic: profile?.chronicDiseases ?? [],
+      allergies: profile?.allergies ?? [],
+      currentMedications: profile?.currentMedications ?? '',
+    });
 
+    if (drugs.length > 0) {
+      sections.push({
+        type: 'drugs',
+        key: 'otc',
+        title: 'OTC 非处方药参考',
+        icon: '💊',
+        drugs,
+        warning: [
+          '⚠️ 严格不推荐抗生素、激素、处方药；如需请医生面诊。',
+          '⚠️ 用药前请阅读说明书，确认无过敏或相互作用。',
+        ],
+      });
+    }
+  }
+
+  // 4) 休息与作息
   sections.push({
+    type: 'text',
     key: 'rest',
     title: '休息与作息',
     icon: '🛏️',
-    content: rest,
+    content: buildRestAdvice(input, part),
   });
 
+  // 5) 饮食与生活调理
   sections.push({
+    type: 'text',
     key: 'diet',
     title: '饮食与生活调理',
     icon: '🥬',
-    content: diet,
+    content: buildDietAdvice(input, part),
   });
 
+  // 6) 症状预测与病程发展
+  const pred = predict({
+    partId: input.partId,
+    symptomIds: input.symptomIds,
+    population: input.population,
+    painLevel: input.painLevel,
+    durationHours: input.durationHours,
+  });
   sections.push({
+    type: 'prediction',
+    key: 'prediction',
+    title: '症状预测与病程发展',
+    icon: '🔮',
+    prediction: pred,
+  });
+
+  // 7) 生活方式与人群特别提示
+  sections.push({
+    type: 'lifestyle',
+    key: 'lifestyle',
+    title: '生活方式建议',
+    icon: '✨',
+    dos: pred.lifestyleDo,
+    avoids: pred.lifestyleAvoid,
+    notes: pred.precautionByGroup,
+  });
+
+  // 8) 观察指标与就医建议
+  sections.push({
+    type: 'text',
     key: 'observe',
     title: '观察指标与就医建议',
     icon: '🔍',
-    content: [...observe, ...escalation],
+    content: [...buildObserveAdvice(level, input), ...buildEscalationAdvice(level)],
   });
 
   return sections;
@@ -258,9 +363,6 @@ function buildHomeAdvice(input: TriageInput, part?: BodyPart): string[] {
     case 'neck_back':
       advice.push('避免长时间保持同一姿势，每小时起身活动 5-10 分钟。');
       advice.push('急性期（前 48 小时）可冷敷患处，每次 15 分钟；之后改热敷。');
-      if (input.symptomIds.includes('ankle_sprain')) {
-        advice.push('遵循 PRICE 原则：Protection 保护 / Rest 休息 / Ice 冰敷 / Compression 加压 / Elevation 抬高。');
-      }
       break;
     case 'chest_lung':
       advice.push('保持室内空气流通，湿度维持在 50%-60%。');
@@ -305,104 +407,7 @@ function buildHomeAdvice(input: TriageInput, part?: BodyPart): string[] {
   return advice;
 }
 
-function buildOTCAdvice(input: TriageInput, part?: BodyPart): string[] {
-  // 合规红线：仅推荐 OTC 常见药品大类，不含具体品牌/剂量
-  // 处方药、抗生素、激素一律不推荐
-  const advice: string[] = [];
-  const isPregnant = input.population === 'pregnant';
-  const isChildren = input.population === 'children';
-  const isChronic = input.population === 'chronic';
-
-  switch (input.partId) {
-    case 'head':
-      if (input.symptomIds.includes('head_ache') || input.symptomIds.includes('head_migraine')) {
-        advice.push('解热镇痛类：对乙酰氨基酚或布洛芬（成人按说明书剂量）。');
-        if (isPregnant) advice.push('⚠️ 孕妇避免布洛芬，优先对乙酰氨基酚，孕晚期禁用。');
-        if (isChildren) advice.push('⚠️ 儿童需使用儿童剂型，按体重计算剂量，避免使用成人阿司匹林。');
-      }
-      if (input.symptomIds.includes('throat_ache')) {
-        advice.push('含片类：西瓜霜含片 / 银黄含片 / 薄荷喉片。');
-      }
-      if (input.symptomIds.includes('nose_block')) {
-        advice.push('鼻腔减充血剂：羟甲唑啉鼻喷剂，连续使用不超过 7 天。');
-      }
-      if (input.symptomIds.includes('eye_red')) {
-        advice.push('可使用人工泪液缓解干涩；细菌性结膜炎需就医。');
-      }
-      break;
-    case 'chest_lung':
-      if (input.symptomIds.includes('cough_dry')) {
-        advice.push('右美沙芬或喷托维林等中枢性镇咳药。');
-      }
-      if (input.symptomIds.includes('cough_phlegm')) {
-        advice.push('盐酸溴己新或氨溴索等祛痰药。');
-      }
-      if (input.symptomIds.includes('sore_throat_cough')) {
-        advice.push('复方感冒药（含对乙酰氨基酚+伪麻黄碱+右美沙芬等）。');
-      }
-      if (isPregnant) advice.push('⚠️ 孕妇使用任何止咳祛痰药前请先咨询医生。');
-      break;
-    case 'stomach':
-      if (input.symptomIds.includes('stomach_ache') || input.symptomIds.includes('acid_reflux')) {
-        advice.push('抗酸/抑酸：铝碳酸镁咀嚼片、复方氢氧化铝。');
-        advice.push('胃黏膜保护：硫糖铝混悬液。');
-        if (isPregnant) advice.push('⚠️ 孕妇胃痛持续需就医，避免自行长期服用抗酸药。');
-      }
-      if (input.symptomIds.includes('diarrhea')) {
-        advice.push('口服补液盐 III（首选），蒙脱石散辅助收敛。');
-        advice.push('⚠️ 儿童和老人脱水风险高，请及时补充电解质。');
-      }
-      if (input.symptomIds.includes('constipation')) {
-        advice.push('开塞露（短期使用）或乳果糖口服液。');
-      }
-      break;
-    case 'skin':
-      if (input.symptomIds.includes('itch') || input.symptomIds.includes('hives')) {
-        advice.push('外用：炉甘石洗剂 / 弱效糖皮质激素软膏（短期小面积）。');
-        advice.push('口服抗组胺：氯雷他定 / 西替利嗪。');
-        if (isPregnant) advice.push('⚠️ 孕妇优先外用炉甘石洗剂，避免口服抗组胺。');
-        if (isChildren) advice.push('⚠️ 儿童需使用儿童剂型糖浆或滴剂。');
-      }
-      if (input.symptomIds.includes('burn_mild')) {
-        advice.push('烫伤膏：京万红软膏 / 湿润烧伤膏（外用）。');
-      }
-      break;
-    case 'joint_limb':
-      if (input.painLevel >= 4 && input.painLevel < 8) {
-        advice.push('外用 NSAIDs：洛索洛芬贴剂 / 扶他林乳胶剂。');
-        advice.push('口服：对乙酰氨基酚或布洛芬（短期）。');
-      }
-      if (isChronic) advice.push('⚠️ 长期慢性病用药者服用 NSAIDs 请咨询医生，警惕相互作用。');
-      break;
-    case 'urinary':
-      if (input.symptomIds.includes('urine_freq') || input.symptomIds.includes('urine_pain')) {
-        advice.push('可多饮水观察 1-2 天，症状不缓解需就医做尿检。');
-      }
-      if (input.symptomIds.includes('menstrual_ache')) {
-        advice.push('布洛芬或萘普生（痛经专用，月经来潮前 1 天开始服用）。');
-      }
-      break;
-    case 'systemic':
-      if (input.symptomIds.includes('fever_mild') || input.symptomIds.includes('fever_mid')) {
-        advice.push('对乙酰氨基酚或布洛芬（按说明书剂量使用）。');
-        if (isChildren) advice.push('⚠️ 儿童禁用阿司匹林！使用儿童退烧糖浆按体重给药。');
-        if (isPregnant) advice.push('⚠️ 孕妇首选对乙酰氨基酚，避免布洛芬。');
-      }
-      if (input.symptomIds.includes('allergy_sneeze')) {
-        advice.push('氯雷他定 / 西替利嗪（每日 1 次）。');
-      }
-      break;
-  }
-  if (advice.length === 0) {
-    advice.push('目前症状未提示需用 OTC 药物，以生活方式调整为主。');
-  }
-  // 通用合规提示
-  advice.push('⚠️ 以上仅为药品大类参考，具体品牌与剂量请咨询药师或医生后购买。');
-  advice.push('⚠️ 严格不推荐抗生素、激素、处方药；如需请医生面诊。');
-  return advice;
-}
-
-function buildRestAdvice(input: TriageInput, part?: BodyPart): string[] {
+function buildRestAdvice(input: TriageInput, _part?: BodyPart): string[] {
   const advice: string[] = [];
   if (input.painLevel >= 5 || input.symptomIds.includes('fever_mild') || input.symptomIds.includes('fever_mid')) {
     advice.push('保证每日 8 小时以上睡眠，避免剧烈运动与重体力劳动。');
@@ -411,14 +416,14 @@ function buildRestAdvice(input: TriageInput, part?: BodyPart): string[] {
     advice.push('睡眠时使用合适高度的枕头，床垫不宜过软。');
     advice.push('避免久坐、弯腰搬重物，必要时佩戴腰围支撑。');
   }
-  if (input.partId === 'eye_red' || input.symptomIds.includes('head_ache')) {
+  if (input.symptomIds.includes('head_ache') || input.symptomIds.includes('eye_red')) {
     advice.push('减少连续用眼，每 30 分钟远眺 5 分钟。');
   }
   advice.push('保持规律作息，22:30 前入睡，避免熬夜。');
   return advice;
 }
 
-function buildDietAdvice(input: TriageInput, part?: BodyPart): string[] {
+function buildDietAdvice(input: TriageInput, _part?: BodyPart): string[] {
   const advice: string[] = [];
   if (input.partId === 'stomach' || input.symptomIds.includes('nausea')) {
     advice.push('饮食清淡：米粥、面条、蒸蛋、软烂蔬菜为主。');
@@ -453,6 +458,13 @@ function buildObserveAdvice(level: TriageResult['level'], input: TriageInput): s
   } else if (level === 'home') {
     advice.push('观察 3-7 天，症状应逐步减轻；若未减轻或加重请就医。');
   }
+  // 人群特异
+  if (input.population === 'pregnant') {
+    advice.push('• 胎动变化（孕中后期）');
+  }
+  if (input.population === 'chronic') {
+    advice.push('• 原有慢性病指标（血压/血糖/心率）');
+  }
   return advice;
 }
 
@@ -472,16 +484,34 @@ function buildEscalationAdvice(level: TriageResult['level']): string[] {
   return advice;
 }
 
-function buildPopulationTip(population: string): string | undefined {
+function buildPopulationTip(population: string, profile: UserProfile | null): string | undefined {
+  // 优先使用 profile 的精细化提示
+  if (profile) {
+    if (profile.isPregnant || population === 'pregnant') {
+      return '您处于孕期/哺乳期，很多药物需谨慎使用，请优先咨询产科医生或药师，居家处理仅作临时缓解。';
+    }
+    if (profile.isLactating && population !== 'pregnant') {
+      return '您处于哺乳期，部分药物会经乳汁分泌，用药前请咨询医生。';
+    }
+    if (profile.hasChildUnder12 || population === 'children') {
+      return '儿童生理特点与成人不同，剂量与禁忌差异较大，居家处理建议同时咨询儿科医生。';
+    }
+    if (profile.hasElder || population === 'elder') {
+      return '老年人往往合并慢性病，症状可能不典型但病情进展快，建议有变化时尽早就医。';
+    }
+    if (profile.chronicDiseases.length > 0 || population === 'chronic') {
+      return `您有慢性病基础（${profile.chronicDiseases.join('、')}），服药较多，使用任何 OTC 药物前请先咨询医生避免药物相互作用。`;
+    }
+  }
   switch (population) {
     case 'pregnant':
-      return '您处于孕期/哺乳期，很多药物需谨慎使用，请优先咨询产科医生或药师，居家处理仅作临时缓解。';
+      return '您处于孕期/哺乳期，很多药物需谨慎使用，请优先咨询产科医生或药师。';
     case 'children':
       return '儿童生理特点与成人不同，剂量与禁忌差异较大，居家处理建议同时咨询儿科医生。';
     case 'elder':
       return '老年人往往合并慢性病，症状可能不典型但病情进展快，建议有变化时尽早就医。';
     case 'chronic':
-      return '您有慢性病基础，服药较多，使用任何 OTC 药物前请先咨询医生避免药物相互作用。';
+      return '您有慢性病基础，服药较多，使用任何 OTC 药物前请先咨询医生。';
     default:
       return undefined;
   }

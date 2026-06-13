@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { runTriage, isCozeBotConfigured } from '@/lib/coze-bot';
 import { BODY_PARTS } from '@/lib/medical-data';
 import type { TriageInput } from '@/lib/triage-engine';
+import type { UserProfile } from '@/lib/profile';
 
 export const runtime = 'nodejs';
 
@@ -14,6 +15,7 @@ interface RequestBody {
   population?: string;
   medicalHistory?: string;
   accompany?: string[];
+  profile?: UserProfile;
 }
 
 function validate(body: RequestBody): string | null {
@@ -57,7 +59,7 @@ export async function POST(request: NextRequest) {
       accompany: body.accompany,
     };
 
-    const result = await runTriage(input);
+    const result = await runTriage(input, body.profile ?? null);
 
     return NextResponse.json({
       success: true,
