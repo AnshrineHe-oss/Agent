@@ -55,38 +55,39 @@
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --radius: 0.75rem;
+  /* 医疗浅蓝主题 - 清晨薄雾般的可靠蓝 */
+  --background: #F7FAFC;
+  --foreground: #1F2937;
+  --card: #FFFFFF;
+  --card-foreground: #1F2937;
+  --popover: #FFFFFF;
+  --popover-foreground: #1F2937;
+  --primary: #3B82C4;
+  --primary-foreground: #FFFFFF;
+  --secondary: #E6F0F8;
+  --secondary-foreground: #1F2937;
+  --muted: #F0F6FB;
+  --muted-foreground: #64748B;
+  --accent: #E6F0F8;
+  --accent-foreground: #1F2937;
+  --destructive: #DC2626;
+  --border: #E2E8F0;
+  --input: #E2E8F0;
+  --ring: #3B82C4;
+  --chart-1: #3B82C4;
+  --chart-2: #6BAEDB;
+  --chart-3: #DC2626;
+  --chart-4: #F59E0B;
+  --chart-5: #16A34A;
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #1F2937;
+  --sidebar-primary: #3B82C4;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #E6F0F8;
+  --sidebar-accent-foreground: #1F2937;
+  --sidebar-border: #E2E8F0;
+  --sidebar-ring: #3B82C4;
 }
 
 .dark {
@@ -134,4 +135,37 @@
 
 body {
   @apply font-sans;
+}
+
+/* 跳步抖动 */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(3px); }
+}
+
+.animate-\[shake_0\.4s_ease-in-out\] {
+  animation: shake 0.4s ease-in-out;
+}
+
+/* 步骤切换 fade + translate */
+@keyframes step-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.step-fade-in {
+  animation: step-fade-in 0.3s ease-out;
+}
+
+/* 隐藏滚动条但保留滚动 */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: rgba(59, 130, 196, 0.2);
+  border-radius: 3px;
 }
