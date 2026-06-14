@@ -1,9 +1,11 @@
 'use client';
 
+import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { AlertTriangle, CheckCircle2, Clock, RotateCcw, ChevronRight, AlertOctagon, Pill, X } from 'lucide-react';
-import type { TriageResult, PlanSection, TextSection, DrugSection, PredictionSection, LifestyleSection } from '@/lib/triage-engine';
+import { AlertTriangle, CheckCircle2, Clock, RotateCcw, ChevronRight, AlertOctagon, Pill, X, Calendar, Copy, Download, History } from 'lucide-react';
+import type { TriageResult, PlanSection, TextSection, DrugSection, PredictionSection, LifestyleSection, PreventionSection, ScheduleSection } from '@/lib/triage-engine';
 import type { DrugRecommendation, DrugEntry } from '@/lib/drug-database';
+import { buildIcsContent, generateSchedule, type DaySchedule } from '@/lib/schedule';
 import { cn } from '@/lib/utils';
 
 interface ResultProps {
@@ -161,6 +163,8 @@ function SectionCard({ section, index, total }: { section: PlanSection; index: n
       {section.type === 'drugs' && <DrugBlock section={section} />}
       {section.type === 'prediction' && <PredictionBlock section={section} />}
       {section.type === 'lifestyle' && <LifestyleBlock section={section} />}
+      {section.type === 'prevention' && <PreventionBlock section={section} />}
+      {section.type === 'schedule' && <ScheduleBlock section={section} />}
     </div>
   );
 }
@@ -496,4 +500,223 @@ function LifestyleBlock({ section }: { section: LifestyleSection }) {
       )}
     </div>
   );
+}
+
+// ──────── 长期预防板块 ────────
+
+function PreventionBlock({ section }: { section: PreventionSection }) {
+  const { prevention, recurrence } = section;
+  return (
+    <div className="space-y-4">
+      {/* 复发性提示 */}
+      {recurrence.isRecurrence && (
+        <div className="rounded-lg border-2 border-amber-300 bg-amber-50 p-3.5">
+          <div className="flex items-start gap-2">
+            <History className="h-5 w-5 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <div className="text-sm font-semibold text-amber-800">
+                复发性提醒：{recurrence.daysAgoText} 已出现过类似症状
+              </div>
+              <p className="text-xs text-amber-700 mt-1 leading-relaxed">
+                过去 {recurrence.windowDays} 天内该部位+症状组合共出现 <strong>{recurrence.count}</strong> 次，
+                建议参考下方长期预防建议，从生活习惯上降低复发概率。
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 长期建议 */}
+      {prevention.longTermTips.length > 0 && (
+        <SubSection title="🌱 长期调养建议" items={prevention.longTermTips} color="emerald" />
+      )}
+
+      {/* 日常习惯 */}
+      {prevention.dailyHabits.length > 0 && (
+        <SubSection title="☀️ 日常习惯养成" items={prevention.dailyHabits} color="amber" />
+      )}
+
+      {/* 诱因规避 */}
+      {prevention.triggerAvoidance.length > 0 && (
+        <SubSection title="🚫 诱因规避" items={prevention.triggerAvoidance} color="red" />
+      )}
+
+      {/* 复查建议 */}
+      {prevention.followUpCheck.length > 0 && (
+        <div className="rounded-lg bg-blue-50/40 border border-blue-100 p-3 text-xs text-slate-700">
+          <span className="font-semibold text-[#3B82C4]">📅 复查/复诊：</span>
+          {prevention.followUpCheck.join('；')}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ──────── 用药时间表板块 ────────
+
+function ScheduleBlock({ section }: { section: ScheduleSection }) {
+  const { schedule, startDate, durationLabel } = section;
+  const [copied, setCopied] = useState(false);
+  const [icsDownloaded, setIcsDownloaded] = useState(false);
+
+  const handleDownloadIcs = () => {
+    const meds = scheduleToMedications(schedule);
+    const ics = buildIcsContent(meds, parseYmd(startDate));
+    const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `用药时间表-${startDate}.ics`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setIcsDownloaded(true);
+    setTimeout(() => setIcsDownloaded(false), 2000);
+  };
+
+  const handleCopyText = async () => {
+    const lines = schedule.map((s) => {
+      const drugList = s.drugs.map((d) => `${d.name} ${d.perDose}`).join('、');
+      return `${s.time}  ${s.label}：${drugList}`;
+    });
+    const text = `【居家用药时间表】开始 ${startDate}（${durationLabel}）\n${lines.join('\n')}\n\n⚠️ 本表仅供参考，请遵医嘱或药品说明书。`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // 降级：选中文字
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* 时间表头 */}
+      <div className="rounded-lg bg-gradient-to-r from-[#E6F0F8] to-blue-50/40 p-3.5">
+        <div className="text-xs text-slate-500 mb-0.5">⏰ 每日服药计划</div>
+        <div className="text-base font-semibold text-[#1F2937]">
+          开始日期：{startDate}{durationLabel ? `（${durationLabel}）` : ''}
+        </div>
+      </div>
+
+      {/* 时间表 */}
+      <div className="space-y-2.5">
+        {schedule.map((s, i) => (
+          <ScheduleRow key={i} slot={s} index={i} />
+        ))}
+      </div>
+
+      {/* 操作按钮 */}
+      <div className="grid grid-cols-2 gap-2 pt-1">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handleDownloadIcs}
+          className="h-10 rounded-xl text-sm"
+        >
+          <Download className="h-4 w-4 mr-1.5" />
+          {icsDownloaded ? '已下载 ✓' : '下载日历提醒'}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handleCopyText}
+          className="h-10 rounded-xl text-sm"
+        >
+          {copied ? (
+            <>
+              <CheckCircle2 className="h-4 w-4 mr-1.5 text-emerald-600" />
+              已复制
+            </>
+          ) : (
+            <>
+              <Copy className="h-4 w-4 mr-1.5" />
+              复制文字版
+            </>
+          )}
+        </Button>
+      </div>
+
+      {/* 说明 */}
+      <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5 text-xs text-slate-500 leading-relaxed">
+        💡 <strong>下载日历</strong>可一键导入 iOS / 安卓 / Outlook 日历，系统会按时间自动提醒；
+        <strong>复制文字</strong>可粘贴到便签或发送给家人查看。
+      </div>
+    </div>
+  );
+}
+
+function ScheduleRow({ slot, index }: { slot: DaySchedule; index: number }) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 hover:border-[#3B82C4]/40 transition">
+      <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-lg bg-[#E6F0F8]">
+        <div className="text-base font-bold text-[#3B82C4] leading-none">{slot.time.split(':')[0]}</div>
+        <div className="text-[10px] text-slate-500 mt-0.5">:{slot.time.split(':')[1]}</div>
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs text-slate-500 mb-0.5">{slot.label}</div>
+        {slot.drugs.map((d, i) => (
+          <div key={i} className="text-sm text-[#1F2937]">
+            <span className="font-medium">{d.name}</span>
+            <span className="text-slate-500 ml-1.5">{d.perDose}</span>
+            {d.note && <span className="text-amber-600 text-xs ml-1.5">· {d.note}</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// 把 DaySchedule 转换回 MedicationEntry（用于 ICS 导出）
+function scheduleToMedications(schedule: DaySchedule[]): import('@/lib/history').MedicationEntry[] {
+  const map = new Map<string, import('@/lib/history').MedicationEntry>();
+  for (const s of schedule) {
+    for (const d of s.drugs) {
+      if (!map.has(d.name)) {
+        map.set(d.name, {
+          name: d.name,
+          category: d.category,
+          perDose: d.perDose,
+          frequency: '按时间表',
+          maxDaily: '按时间表',
+          forPopulation: 'general',
+          avoid: [],
+          isApplicable: true,
+          notApplicableReason: undefined,
+          schedule: [],
+          durationDays: 7,
+          notes: d.note,
+        });
+      }
+      const entry = map.get(d.name)!;
+      if (!entry.schedule.includes(s.time)) {
+        entry.schedule.push(s.time);
+      }
+    }
+  }
+  // 排序 schedule
+  for (const m of map.values()) {
+    m.schedule.sort((a, b) => {
+      const [ah, am] = a.split(':').map((n) => parseInt(n, 10));
+      const [bh, bm] = b.split(':').map((n) => parseInt(n, 10));
+      return (ah * 60 + (am || 0)) - (bh * 60 + (bm || 0));
+    });
+  }
+  return Array.from(map.values());
+}
+
+function parseYmd(ymd: string): Date {
+  const [y, m, d] = ymd.split('-').map((n) => parseInt(n, 10));
+  return new Date(y, (m || 1) - 1, d || 1);
 }

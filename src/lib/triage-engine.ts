@@ -6,6 +6,9 @@ import type { BodyPart, SymptomItem } from './medical-data';
 import type { UserProfile } from './profile';
 import { recommendDrugs, type DrugRecommendation } from './drug-database';
 import { predict, type Prediction } from './prediction';
+import { buildPreventionTips, type PreventionTips } from './prevention';
+import { defaultScheduleForDrug, generateSchedule, type DaySchedule } from './schedule';
+import type { ConsultRecord, MedicationEntry, RecurrenceResult } from './history';
 
 export interface TriageInput {
   partId: string;
@@ -16,6 +19,8 @@ export interface TriageInput {
   population: string; // general | pregnant | children | elder | chronic
   medicalHistory?: string;
   accompany?: string[];
+  /** 客户端预检测的复发性结果（可选；为空时引擎按首次问诊处理） */
+  recurrence?: RecurrenceResult;
 }
 
 // ── 板块类型（联合） ──
@@ -54,7 +59,33 @@ export interface LifestyleSection {
   notes: string[];
 }
 
-export type PlanSection = TextSection | DrugSection | PredictionSection | LifestyleSection;
+export interface PreventionSection {
+  type: 'prevention';
+  key: string;
+  title: string;
+  icon: string;
+  prevention: PreventionTips;
+  recurrence: RecurrenceResult;
+}
+
+export interface ScheduleSection {
+  type: 'schedule';
+  key: string;
+  title: string;
+  icon: string;
+  schedule: DaySchedule[];
+  startDate: string; // YYYY-MM-DD
+  durationDays: number;
+  durationLabel?: string;
+}
+
+export type PlanSection =
+  | TextSection
+  | DrugSection
+  | PredictionSection
+  | LifestyleSection
+  | PreventionSection
+  | ScheduleSection;
 
 export interface TriageResult {
   level: 'home' | 'caution' | 'urgent';
@@ -66,6 +97,12 @@ export interface TriageResult {
   sections: PlanSection[];
   specialPopulationTip?: string;
   profileApplied: boolean; // 是否应用了档案数据
+  /** 复发性结果（用于客户端保存历史时复诊） */
+  recurrence?: RecurrenceResult;
+  /** 药品列表（用于历史记录存档 + 用药时间表） */
+  medications?: MedicationEntry[];
+  /** 用药警示 */
+  drugWarnings?: string[];
 }
 
 // ──────── 规则判定 ────────
@@ -103,9 +140,22 @@ export function analyzeTriage(
   input: TriageInput,
   allParts: BodyPart[],
   profile: UserProfile | null = null,
+  recurrenceOverride?: RecurrenceResult,
 ): TriageResult {
   const part = allParts.find((p) => p.id === input.partId);
   const riskFactors: string[] = [];
+
+  // 复发性结果（外部传入优先，否则视为首次问诊）
+  const recurrence: RecurrenceResult =
+    recurrenceOverride ??
+    input.recurrence ?? {
+      isRecurrence: false,
+      count: 0,
+      lastTimestamp: null,
+      windowDays: 0,
+      daysAgoText: '',
+      records: [],
+    };
 
   // 1) 红旗症状
   const hitRedFlag = input.symptomIds.find((id) => RED_FLAG_SYMPTOMS.has(id));
@@ -142,9 +192,19 @@ export function analyzeTriage(
     riskFactors.push('儿童中等度发热建议线下就医明确病因');
   }
 
-  // 7) 过敏
-  for (const a of profile?.allergies ?? []) {
-    // 已在风险因素提示（informational）
+  // 7) 档案过敏提示
+  if (profile?.allergies && profile.allergies.length > 0) {
+    riskFactors.push(`档案提示您对以下物质过敏：${profile.allergies.join('、')}`);
+  }
+
+  // 8) 档案慢性病提示
+  if (profile?.chronicDiseases && profile.chronicDiseases.length > 0) {
+    riskFactors.push(`档案提示您有以下慢性病：${profile.chronicDiseases.join('、')}`);
+  }
+
+  // 9) 复发性提示
+  if (recurrence.isRecurrence) {
+    riskFactors.push(`复发提示：${recurrenceLabelText(recurrence)}`);
   }
 
   // ── 等级判定 ──
@@ -208,7 +268,33 @@ export function analyzeTriage(
     `人群：${popLabel(input.population)}`,
   ].join('；');
 
-  const sections = buildPlanSections(input, part, level, profile);
+  const sections = buildPlanSections(input, part, level, profile, recurrence);
+
+  // 构建 medications 列表（用于历史存档 + 时间表）
+  const medications = buildMedicationsList(input, profile);
+
+  // 把用药时间表追加为板块
+  if (medications.some((m) => m.isApplicable)) {
+    const daySchedule = generateSchedule(medications);
+    if (daySchedule.length > 0) {
+      const maxDays = Math.max(
+        ...medications.filter((m) => m.isApplicable).map((m) => m.durationDays || 7),
+      );
+      const today = new Date();
+      const ymd = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      sections.push({
+        type: 'schedule',
+        key: 'schedule',
+        title: '每日用药时间表',
+        icon: '⏰',
+        schedule: daySchedule,
+        startDate: ymd,
+        durationDays: maxDays,
+        durationLabel: `从今天起连续 ${maxDays} 天`,
+      });
+    }
+  }
+
   const specialPopulationTip = buildPopulationTip(input.population, profile);
 
   return {
@@ -221,7 +307,50 @@ export function analyzeTriage(
     sections,
     specialPopulationTip,
     profileApplied: profile !== null && (profile.chronicDiseases.length > 0 || profile.allergies.length > 0 || profile.isPregnant || profile.isLactating || profile.hasChildUnder12 || profile.hasElder),
+    recurrence,
+    medications,
   };
+}
+
+function recurrenceLabelText(r: RecurrenceResult): string {
+  if (!r.isRecurrence) return '本次为首次问诊';
+  return `近 ${r.windowDays} 天内已出现 ${r.count} 次类似情况`;
+}
+
+function buildMedicationsList(
+  input: TriageInput,
+  profile: UserProfile | null,
+): MedicationEntry[] {
+  // 紧急情况不下发药物
+  if (input.population === 'pregnant' && false) {
+    // 保留孕妇场景以备特殊处理
+  }
+  const drugs = recommendDrugs(input.partId, input.symptomIds, {
+    isPregnant: input.population === 'pregnant' || profile?.isPregnant === true,
+    isLactating: profile?.isLactating === true,
+    age: profile?.age || '',
+    chronic: profile?.chronicDiseases ?? [],
+    allergies: profile?.allergies ?? [],
+    currentMedications: profile?.currentMedications ?? '',
+  });
+  return drugs.map((rec) => {
+    const drug = rec.drug;
+    const schedule = defaultScheduleForDrug(drug.adultDose?.frequency ?? drug.childrenDose?.frequency ?? '');
+    return {
+      name: drug.genericName,
+      category: drug.category,
+      perDose: drug.adultDose?.perDose ?? drug.childrenDose?.perDose ?? '按说明书',
+      frequency: drug.adultDose?.frequency ?? drug.childrenDose?.frequency ?? '按说明书',
+      maxDaily: drug.adultDose?.maxDaily ?? drug.childrenDose?.maxDaily ?? '按说明书',
+      forPopulation: input.population,
+      avoid: drug.avoid,
+      isApplicable: rec.appliesToYou,
+      notApplicableReason: rec.appliesToYou ? undefined : rec.appliesReason,
+      schedule,
+      durationDays: parseInt(drug.duration.match(/(\d+)/)?.[1] ?? '7', 10),
+      notes: drug.warning,
+    };
+  });
 }
 
 // ──────── 板块生成 ────────
@@ -231,6 +360,7 @@ function buildPlanSections(
   part: BodyPart | undefined,
   level: TriageResult['level'],
   profile: UserProfile | null,
+  recurrence: RecurrenceResult,
 ): PlanSection[] {
   const sections: PlanSection[] = [];
 
@@ -340,6 +470,23 @@ function buildPlanSections(
     title: '观察指标与就医建议',
     icon: '🔍',
     content: [...buildObserveAdvice(level, input), ...buildEscalationAdvice(level)],
+  });
+
+  // 9) 长期预防（复发性场景或慢病人群）
+  const prevention = buildPreventionTips({
+    partId: input.partId,
+    symptomIds: input.symptomIds,
+    chronicDiseases: profile?.chronicDiseases ?? [],
+    population: input.population,
+    recurrence,
+  });
+  sections.push({
+    type: 'prevention',
+    key: 'prevention',
+    title: prevention.title,
+    icon: recurrence.isRecurrence ? '🔁' : '🛡️',
+    prevention,
+    recurrence,
   });
 
   return sections;

@@ -3,6 +3,7 @@ import { runTriage, isCozeBotConfigured } from '@/lib/coze-bot';
 import { BODY_PARTS } from '@/lib/medical-data';
 import type { TriageInput } from '@/lib/triage-engine';
 import type { UserProfile } from '@/lib/profile';
+import type { RecurrenceResult } from '@/lib/history';
 
 export const runtime = 'nodejs';
 
@@ -16,6 +17,7 @@ interface RequestBody {
   medicalHistory?: string;
   accompany?: string[];
   profile?: UserProfile;
+  recurrence?: RecurrenceResult;
 }
 
 function validate(body: RequestBody): string | null {
@@ -57,6 +59,7 @@ export async function POST(request: NextRequest) {
       population: body.population!,
       medicalHistory: body.medicalHistory,
       accompany: body.accompany,
+      recurrence: body.recurrence,
     };
 
     const result = await runTriage(input, body.profile ?? null);

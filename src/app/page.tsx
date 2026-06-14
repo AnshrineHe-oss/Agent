@@ -8,9 +8,11 @@ import { Step3Detail, type Step3Data } from '@/components/consult/step3-detail';
 import { ConsultFooter } from '@/components/consult/footer';
 import { ResultView } from '@/components/consult/result';
 import { ProfileEditor } from '@/components/consult/profile-editor';
-import { Stethoscope, ShieldCheck, UserCircle2, BookOpen } from 'lucide-react';
+import { HistoryViewer } from '@/components/consult/history-viewer';
+import { Stethoscope, ShieldCheck, UserCircle2, BookOpen, History } from 'lucide-react';
 import type { TriageResult } from '@/lib/triage-engine';
 import { loadProfile, applyProfileToStep3, type UserProfile } from '@/lib/profile';
+import { detectRecurrence, appendRecord, listRecords, type RecurrenceResult } from '@/lib/history';
 
 const STEPS = [
   { id: 1, title: '选部位', subtitle: '身体哪里不舒服' },
@@ -48,11 +50,16 @@ export default function Home() {
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
 
-  // 初始化时从 localStorage 读取档案
+  // 问诊历史
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyCount, setHistoryCount] = useState(0);
+
+  // 初始化时从 localStorage 读取档案 + 同步历史数量
   useEffect(() => {
     const p = loadProfile();
     setProfile(p);
     setProfileLoaded(true);
+    setHistoryCount(listRecords().length);
   }, []);
 
   // 当首次进入步骤 3 时，自动应用档案
@@ -106,6 +113,12 @@ export default function Home() {
     // 步骤3完成 -> 提交问诊
     setPhase('loading');
     setError(null);
+
+    // 客户端预检测复发性
+    const recurrence: RecurrenceResult = partId
+      ? detectRecurrence(partId, symptomIds)
+      : { isRecurrence: false, count: 0, windowDays: 0, lastTimestamp: null, daysAgoText: '', records: [] };
+
     try {
       const res = await fetch('/api/triage', {
         method: 'POST',
@@ -120,6 +133,7 @@ export default function Home() {
           medicalHistory: step3.medicalHistory,
           accompany: step3.accompany,
           profile, // 一并提交档案
+          recurrence, // 客户端预检测的复发性
         }),
       });
       const json = (await res.json()) as {
@@ -131,8 +145,60 @@ export default function Home() {
       if (!json.success || !json.data) {
         throw new Error(json.error ?? '问诊服务返回异常');
       }
-      setResult(json.data);
+      const data = json.data;
+      setResult(data);
       if (json.meta?.engine) setEngine(json.meta.engine);
+
+      // 保存到问诊历史
+      try {
+        // 症状名（用 summary 里的内容提取）
+        const symptomNames = data.summary
+          .split('；')
+          .find((s) => s.startsWith('症状：'))
+          ?.replace('症状：', '')
+          .split('、') ?? [];
+        const populationLabel =
+          data.summary.split('；').find((s) => s.startsWith('人群：'))?.replace('人群：', '') || step3.population;
+        const partName = data.summary.split('；')[0]?.replace('部位：', '') || partId!;
+
+        // 预测警示信号（从 prediction section 中取）
+        const predictionSection = data.sections.find(
+          (s) => s.key === 'prediction' && s.type === 'prediction',
+        );
+        const warningSigns =
+          predictionSection && predictionSection.type === 'prediction'
+            ? predictionSection.prediction.redFlags
+            : [];
+
+        appendRecord({
+          partId: partId!,
+          partName,
+          symptomIds,
+          symptomNames,
+          population: step3.population,
+          level: data.level,
+          summary: data.summary,
+          riskFactors: data.riskFactors,
+          profileSnapshot: {
+            nickname: profile?.nickname ?? '',
+            age: profile?.age || '',
+            gender: profile?.gender || '',
+            chronicDiseases: profile?.chronicDiseases ?? [],
+            allergies: profile?.allergies ?? [],
+            currentMedications: profile?.currentMedications ?? '',
+            isPregnant: profile?.isPregnant ?? false,
+            isLactating: profile?.isLactating ?? false,
+          },
+          medications: data.medications ?? [],
+          recoveryDays: '',
+          warningSigns,
+        });
+        setHistoryCount(listRecords().length);
+      } catch (saveErr) {
+        // 保存失败不影响主流程
+        console.error('保存问诊记录失败：', saveErr);
+      }
+
       setPhase('result');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (e) {
@@ -197,6 +263,24 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setHistoryOpen(true)}
+              className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-xl border text-sm transition ${
+                historyCount > 0
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300'
+                  : 'border-slate-200 text-slate-600 hover:border-emerald-300'
+              }`}
+              title="查看历史问诊记录"
+            >
+              <History className="h-4 w-4" />
+              <span className="hidden sm:inline">问诊历史</span>
+              {historyCount > 0 && (
+                <span className="text-[10px] font-semibold bg-emerald-600 text-white px-1.5 py-0.5 rounded-full">
+                  {historyCount}
+                </span>
+              )}
+            </button>
             <button
               type="button"
               onClick={() => setEditorOpen(true)}
@@ -326,6 +410,13 @@ export default function Home() {
         open={editorOpen}
         onClose={() => setEditorOpen(false)}
         onSaved={(p) => setProfile(p)}
+      />
+
+      {/* 问诊历史查看器 */}
+      <HistoryViewer
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onRecordsChanged={() => setHistoryCount(listRecords().length)}
       />
     </div>
   );
